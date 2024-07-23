@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Simulação de ecosistema Boids</title>
+        <style>
+            body {
+                margin: 0;
+                overflow: hidden;
+            }
+            canvas {
+                display: block;
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="boidCanvas"></canvas>
+        <script>
+            const canvas = document.getElementById('boidCanvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            class Vector {
+                constructor(x, y) {
+                    this.x = x;
+                    this.y = y;
+                }
+
+                add(v) {
+                    this.x += v.x;
+                    this.y += v.y;
+                }
+
+                sub(v) {
+                    this.x -= v.x;
+                    this.y -= v.y;
+                }
+
+                mult(n) {
+                    this.x *= n;
+                    this.y *= n;
+                }
+
+                div(n) {
+                    this.x /= n;
+                    this.y /= n;
+                }
+
+                mag() {
+                    return Math.sqrt(this.x * this.x + this.y * this.y);
+                }
+
+                setMagnitude(n) {
+                    this.normalize();
+                    this.mult(n);
+                }
+
+                normalize() {
+                    let m = this.mag();
+                    if (m != 0) this.div(m);
+                }
+
+                limit(max) {
+                    if (this.mag() > max) {
+                        this.normalize();
+                        this.mult(max);
+                    }
+                }
+
+                dist(v) {
+                    let dx = this.x - v.x;
+                    let dy = this.y - v.y;
+                    return Math.sqrt(dx * dx + dy * dy);
+                }
+
+                static sub(v1, v2) {
+                    return new Vector(v1.x - v2.x, v1.y - v2.y);
+                }
+            }
+
+            class Boid {
+                constructor(x, y) {
+                    this.position = new Vector(x || Math.random() * canvas.width, y || Math.random() * canvas.height);
+                    this.velocity = new Vector(Math.random() * 2 - 1, Math.random() * 2 - 1);
+                    this.velocity.setMagnitude(2);
+                    this.acceleration = new Vector(0, 0);
+                    this.maxForce = 0.2;
+                    this.maxSpeed = 4;
+                    this.color = this.generateRandomColor();
+                    this.radius = 5;
+                }
+
+                generateRandomColor() {
+                    const hue = Math.floor(Math.random() * 360);
+                    return `hsl(${hue}, 100%, 50%)`;
+                }
+
+                edges() {
+                    const margin = 10;
+                    const turnFactor = 1;
+
+                    if (this.position.x < margin) {
+                        this.acceleration.add(new Vector(turnFactor, 0));
+                    }
+                    if (this.position.x > canvas.width - margin) {
+                        this.acceleration.add(new Vector(-turnFactor, 0));
+                    }
+                    if (this.position.y < margin) {
+                        this.acceleration.add(new Vector(0, turnFactor));
+                    }
+                    if (this.position.y > canvas.height - margin) {
+                        this.acceleration.add(new Vector(0, -turnFactor));
+                    }
+                }
+
+                align(boids) {
+                    let perceptionRadius = 50;
+                    let steering = new Vector(0, 0);
+                    let total = 0;
+                    for (let other of boids) {
+                        let d = this.position.dist(other.position);
+                        if (other != this && d < perceptionRadius) {
+                            steering.add(other.velocity);
+                            total++;
+                        }
+                    }
+                    if (total > 0) {
+                        steering.div(total);
+                        steering.setMagnitude(this.maxSpeed);
+                        steering.sub(this.velocity);
+                        steering.limit(this.maxForce);
+                    }
+                    return steering;
+                }
+
+                cohesion(boids) {
+                    let perceptionRadius = 100;
+                    let steering = new Vector(0, 0);
+                    let total = 0;
+                    for (let other of boids) {
+                        let d = this.position.dist(other.position);
+                        if (other != this && d < perceptionRadius) {
+                            steering.add(other.position);
+                            total++;
+                        }
+                    }
+                    if (total > 0) {
+                        steering.div(total);
+                        steering.sub(this.position);
+                        steering.setMagnitude(this.maxSpeed);
+                        steering.sub(this.velocity);
+                        steering.limit(this.maxForce);
+                    }
+                    return steering;
+                }
+
+                separation(boids) {
+                    let perceptionRadius = 50;
+                    let steering = new Vector(0, 0);
+                    let total = 0;
+                    for (let other of boids) {
+                        let d = this.position.dist(other.position);
+                        if (other != this && d < perceptionRadius) {
+                            let diff = Vector.sub(this.position, other.position);
+                            diff.div(d * d);
+                            steering.add(diff);
+                            total++;
+                        }
+                    }
+                    if (total > 0) {
+                        steering.div(total);
+                        steering.setMagnitude(this.maxSpeed);
+                        steering.sub(this.velocity);
+                        steering.limit(this.maxForce);
+                    }
+                    return steering;
+                }
+
+                flee(predators) {
+                    let perceptionRadius = 150;
+                    let steering = new Vector(0, 0);
+                    for (let predator of predators) {
+                        let d = this.position.dist(predator.position);
+                        if (d < perceptionRadius) {
+                            let diff = Vector.sub(this.position, predator.position);
+                            diff.div(d);
+                            steering.add(diff);
+                        }
+                    }
+                    if (steering.mag() > 0) {
+                        steering.setMagnitude(this.maxSpeed);
+                        steering.sub(this.velocity);
+                        steering.limit(this.maxForce * 2);
+                    }
+                    return steering;
+                }
+
+                seekFood(food) {
+                    let closestFood = null;
+                    let closestDist = Infinity;
+                    for (let f of food) {
+                        let d = this.position.dist(f.position);
+                        if (d < closestDist) {
+                            closestFood = f;
+                            closestDist = d;
+                        }
+                    }
+                    if (closestFood) {
+                        let desired = Vector.sub(closestFood.position, this.position);
+                        desired.setMagnitude(this.maxSpeed);
+                        let steer = Vector.sub(desired, this.velocity);
+                        steer.limit(this.maxForce);
+                        return steer;
+                    }
+                    return new Vector(0, 0);
+                }
+
+                flock(boids, predators, food) {
+                    let alignment = this.align(boids);
+                    let cohesion = this.cohesion(boids);
+                    let separation = this.separation(boids);
+                    let flee = this.flee(predators);
+                    let seekFood = this.seekFood(food);
+
+                    alignment.mult(1);
+                    cohesion.mult(1);
+                    separation.mult(1.5);
+                    flee.mult(2); // Prioridade medo dos predadores
+                    seekFood.mult(1.5); // Prioridade de busca por comida
+
+                    this.acceleration.add(alignment);
+                    this.acceleration.add(cohesion);
+                    this.acceleration.add(separation);
+                    this.acceleration.add(flee);
+                    this.acceleration.add(seekFood);
+                }
+
+                update() {
+                    this.position.add(this.velocity);
+                    this.velocity.add(this.acceleration);
+                    this.velocity.limit(this.maxSpeed);
+                    this.acceleration.mult(0);
+                }
+
+                show() {
+                    ctx.fillStyle = this.color;
+                    ctx.beginPath();
+                    ctx.arc(this.position.x, this.position.y, this.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                duplicate() {
+                    return new Boid(this.position.x + 5, this.position.y + 5);
+                }
+            }
+
+            class Predator extends Boid {
+                constructor() {
+                    super();
+                    this.color = 'red';
+                    this.maxSpeed = 3;
+                    this.maxForce = 0.1;
+                    this.radius = 8;
+                }
+
+                hunt(boids) {
+                    let perceptionRadius = 200;
+                    let closest = null;
+                    let closestD = Infinity;
+                    for (let boid of boids) {
+                        let d = this.position.dist(boid.position);
+                        if (d < perceptionRadius && d < closestD) {
+                            closest = boid;
+                            closestD = d;
+                        }
+                    }
+                    if (closest) {
+                        let desired = Vector.sub(closest.position, this.position);
+                        desired.setMagnitude(this.maxSpeed);
+                        let steer = Vector.sub(desired, this.velocity);
+                        steer.limit(this.maxForce);
+                        return steer;
+                    }
+                    return new Vector(0, 0);
+                }
+
+                flock(boids, predators) {
+                    let hunt = this.hunt(boids);
+                    hunt.mult(1.5);
+                    this.acceleration.add(hunt);
+                }
+            }
+
+            class Food {
+                constructor() {
+                    this.position = new Vector(Math.random() * (canvas.width - 20) + 10, Math.random() * (canvas.height - 20) + 10);
+                    this.radius = 4;
+                }
+
+                show() {
+                    ctx.fillStyle = 'green';
+                    ctx.beginPath();
+                    ctx.arc(this.position.x, this.position.y, this.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            const flock = [];
+            const predators = [];
+            const food = [];
+            let flockSize = 150;
+            const predatorCount = 18;
+            const foodCount = 15;
+
+            for (let i = 0; i < flockSize; i++) {
+                flock.push(new Boid());
+            }
+
+            for (let i = 0; i < predatorCount; i++) {
+                predators.push(new Predator());
+            }
+
+            for (let i = 0; i < foodCount; i++) {
+                food.push(new Food());
+            }
+
+            function animate() {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Mostra comida
+                for (let f of food) {
+                    f.show();
+                }
+
+                // Atualiza e mostra os boids
+                for (let i = flock.length - 1; i >= 0; i--) {
+                    let boid = flock[i];
+                    boid.edges();
+                    boid.flock(flock, predators, food);
+                    boid.update();
+                    boid.show();
+
+                    // Verifica se encontrou comida
+                    for (let j = food.length - 1; j >= 0; j--) {
+                        if (boid.position.dist(food[j].position) < boid.radius + food[j].radius) {
+                            food.splice(j, 1);
+                            flock.push(boid.duplicate());
+                            break;
+                        }
+                    }
+                }
+
+                // Atualiza e mostra os predadores
+                for (let predator of predators) {
+                    predator.edges();
+                    predator.flock(flock, predators);
+                    predator.update();
+                    predator.show();
+
+                    // Predador come um boid
+                    for (let i = flock.length - 1; i >= 0; i--) {
+                        if (predator.position.dist(flock[i].position) < predator.radius + flock[i].radius) {
+                            flock.splice(i, 1);
+                            food.push(new Food()); // repoe comida pelo boid morto
+                            break;
+                        }
+                    }
+                }
+
+                // Mostra estatisitcas
+                ctx.fillStyle = 'white';
+                ctx.font = '12px Arial';
+                ctx.fillText(`População: ${flock.length}`, 10, 20);
+                ctx.fillText(`Caçadores: ${predators.length}`, 10, 32);
+                ctx.fillText(`Comida: ${food.length}`, 10, 44);
+
+                requestAnimationFrame(animate);
+            }
+
+            animate();
+
+            window.addEventListener('resize', () => {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            });
+        </script>
+    </body>
+</html>
